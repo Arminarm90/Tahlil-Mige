@@ -1,3 +1,9 @@
+# jsons
+users.json
+user_step_log.json
+n8n-user-access-cbb88f774dbe.json
+
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
