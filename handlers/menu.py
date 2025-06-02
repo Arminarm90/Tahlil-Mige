@@ -3,7 +3,7 @@ from telegram import Update, KeyboardButton, ReplyKeyboardMarkup, InlineKeyboard
 from telegram.ext import ContextTypes
 import requests
 from utils.storage import save_phone, get_phone, normalize_phone_number, load_users, load_user_steps, save_user_steps
-from config import CHECK_PHONE_URL, DAY_CONTENT_BASE_URL, YOUR_TELEGRAM_ID
+from config import CHECK_PHONE_URL, DAY_CONTENT_BASE_URL, YOUR_TELEGRAM_ID, N8N_SUPPORT_WEBHOOK_URL
 from services.subs import add_user_if_not_exists, days_left, check_subscription_active
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -146,27 +146,70 @@ async def handle_day_selection(update: Update, context: ContextTypes.DEFAULT_TYP
         await context.bot.send_message(chat_id=query.message.chat.id, text=f"خطا در دریافت محتوا. لطفاً بعداً امتحان کن. Error: {e}")
 
 async def main_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    General message handler to route messages based on user's mode or to main menu.
-    """
     mode = context.user_data.get("mode")
+    user_id = update.effective_user.id
+    username = update.effective_user.username
+    first_name = update.effective_user.first_name
 
-    if mode in ["support", "homework"]:
-        try:
-            if update.message.text or update.message.document or update.message.photo or update.message.voice:
-                await context.bot.forward_message(
-                    chat_id=YOUR_TELEGRAM_ID,
-                    from_chat_id=update.message.chat.id,
-                    message_id=update.message.message_id
-                )
-                await update.message.reply_text("✅ با موفقیت ارسال شد.")
-            else:
-                await update.message.reply_text("❗ لطفاً متن، عکس یا فایل ارسال کن.")
-            context.user_data["mode"] = None
-        except Exception as e:
-            await update.message.reply_text(f"❌ خطا در ارسال. لطفاً دوباره امتحان کن. Error: {e}")
+    # تنها پیام‌های متنی را به AI ارسال می‌کنیم
+    if update.message.text: 
+        message_text = update.message.text
     else:
-        await handle_main_menu_selection(update, context)
+        # اگر پیام متنی نبود (فایل، عکس، ویس و غیره)، به AI نمی‌فرستیم
+        # می‌توانید تصمیم بگیرید که به ادمین فوروارد کنید یا پیام خطا بدهید
+        if mode == "support":
+            await update.message.reply_text("🤖 متاسفم، در حال حاضر فقط می‌توانم به پیام‌های متنی پاسخ دهم.")
+            context.user_data["mode"] = None # خروج از حالت پشتیبانی AI
+            return
+
+    if mode == "support":
+        # 1. پیام را به n8n Webhook ارسال کنید
+        payload = {
+            "user_id": user_id,
+            "username": username,
+            "first_name": first_name,
+            "message": message_text,
+            "chat_id": update.message.chat.id # برای بازگشت پاسخ به همین چت
+        }
+
+        try:
+            # ارسال غیرهمزمان به n8n برای جلوگیری از بلوکه شدن ربات
+            # از requests.post استفاده می‌کنیم، اما اگر می‌خواهید کاملاً async باشد، باید از aiohttp استفاده کنید.
+            # برای سادگی، requests.post را استفاده می‌کنیم و پاسخ اولیه را سریع می‌دهیم.
+            requests.post(N8N_SUPPORT_WEBHOOK_URL, json=payload, timeout=5) # timeout اضافه کنید
+
+            await update.message.reply_text("✅ سوال شماارسال شد. لطفا منتظر پاسخ باشید.")
+
+            context.user_data["mode"] = None # حالت را به حالت عادی برگردانید
+
+        except requests.exceptions.RequestException as e:
+            print(f"Error sending message to n8n webhook: {e}")
+            await update.message.reply_text(f"❌ خطایی رخ داد. لطفاً دوباره امتحان کنید.")
+            # Optional: Forward to YOUR_TELEGRAM_ID for manual review
+            await context.bot.send_message(
+                chat_id=YOUR_TELEGRAM_ID,
+                text=f"AI integration failed for user {user_id}. Message: {message_text}\nError: {e}"
+            )
+            context.user_data["mode"] = None
+    else:
+        # کدهای موجود برای "homework" و "handle_main_menu_selection"
+        # ... (همانند قبل)
+        if mode == "homework":
+            try:
+                if update.message.text or update.message.document or update.message.photo or update.message.voice:
+                    await context.bot.forward_message(
+                        chat_id=YOUR_TELEGRAM_ID,
+                        from_chat_id=update.message.chat.id,
+                        message_id=update.message.message_id
+                    )
+                    await update.message.reply_text("✅ با موفقیت ارسال شد.")
+                else:
+                    await update.message.reply_text("❗ لطفاً متن، عکس یا فایل ارسال کن.")
+                context.user_data["mode"] = None
+            except Exception as e:
+                await update.message.reply_text(f"❌ خطا در ارسال. لطفاً دوباره امتحان کن. Error: {e}")
+        else:
+            await handle_main_menu_selection(update, context)
 
 async def begin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
